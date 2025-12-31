@@ -1,0 +1,8 @@
+{
+  "name": "ProPrompter AI",
+  "description": "A professional-grade teleprompter and video recording studio with smooth scrolling and high-quality export capabilities.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
