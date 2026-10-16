@@ -13,16 +13,14 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
-  
   const [error, setError] = useState<string | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [recordStream, setRecordStream] = useState<MediaStream | null>(null);
 
-  // Iniciar Câmera e Pré-amplificador de Som
   const startCamera = useCallback(async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setError("Câmera bloqueada. Permita o acesso nas configurações.");
+        setError("Câmera bloqueada. Permita o acesso.");
         return;
       }
 
@@ -42,14 +40,14 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
 
       setStream(rawStream);
 
-      // Amplificador de volume de som (+250%)
+      // Amplificador de volume de som (+300%)
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioCtx();
       audioContextRef.current = audioCtx;
 
       const source = audioCtx.createMediaStreamSource(rawStream);
       const gainNode = audioCtx.createGain();
-      gainNode.gain.value = 2.5;
+      gainNode.gain.value = 3.0; // Volume alto e nítido
 
       const destination = audioCtx.createMediaStreamDestination();
       source.connect(gainNode);
@@ -69,8 +67,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
       }
       setError(null);
     } catch (err) {
-      console.error("Erro câmera:", err);
-      setError("Permita o acesso à Câmera e Microfone.");
+      setError("Permita o acesso à Câmera e Microfone nas configurações.");
     }
   }, []);
 
@@ -82,7 +79,6 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
     };
   }, [startCamera]);
 
-  // Gravação
   useEffect(() => {
     const activeStream = recordStream || stream;
 
@@ -95,7 +91,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
 
       let options: MediaRecorderOptions = {
         audioBitsPerSecond: 128000,
-        videoBitsPerSecond: 3000000
+        videoBitsPerSecond: 2500000
       };
 
       if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1,mp4a.40.2')) {
@@ -119,7 +115,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
             const url = URL.createObjectURL(blob);
             onFinishedVideo(blob, url);
           } else {
-            alert("A gravação foi muito curta. Grave por mais de 3 segundos.");
+            alert("Vídeo muito curto. Grave por pelo menos 3 segundos.");
           }
         };
 
@@ -143,12 +139,8 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
       {error ? (
         <div className="text-center p-6 bg-slate-900 border border-slate-800 rounded-2xl max-w-xs m-4 z-30">
           <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-3" />
-          <h3 className="text-base font-bold text-white mb-2">Permissão da Câmera</h3>
           <p className="text-slate-300 text-xs mb-4">{error}</p>
-          <button 
-            onClick={startCamera}
-            className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold"
-          >
+          <button onClick={startCamera} className="w-full py-2.5 bg-blue-600 text-white rounded-xl text-xs font-bold">
             Tentar Novamente
           </button>
         </div>
