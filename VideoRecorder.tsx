@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { RecordingStatus, PrompterConfig } from './types';
-import { AlertCircle, CheckCircle2, RotateCcw, Share2 } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 
 interface VideoRecorderProps {
   status: RecordingStatus;
   config: PrompterConfig;
-  onFinished: () => void;
+  onFinishedVideo: (blob: Blob, url: string) => void;
 }
 
-const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinished }) => {
+const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishedVideo }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -17,14 +17,12 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
   const [error, setError] = useState<string | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [recordStream, setRecordStream] = useState<MediaStream | null>(null);
-  const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
 
-  // Iniciar Câmera com Áudio Amplificado (+250% volume)
+  // Iniciar Câmera e Pré-amplificador de Som
   const startCamera = useCallback(async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setError("Câmera indisponível. Permita o acesso.");
+        setError("Câmera bloqueada. Permita o acesso nas configurações.");
         return;
       }
 
@@ -44,13 +42,14 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
 
       setStream(rawStream);
 
+      // Amplificador de volume de som (+250%)
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioCtx();
       audioContextRef.current = audioCtx;
 
       const source = audioCtx.createMediaStreamSource(rawStream);
       const gainNode = audioCtx.createGain();
-      gainNode.gain.value = 2.5; // Amplificação para o som ficar alto
+      gainNode.gain.value = 2.5;
 
       const destination = audioCtx.createMediaStreamDestination();
       source.connect(gainNode);
@@ -83,31 +82,6 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
     };
   }, [startCamera]);
 
-  // Salvar na Galeria
-  const autoSalvar = useCallback(async (blob: Blob, url: string) => {
-    const nomeArquivo = `video_${Date.now()}.mp4`;
-    const file = new File([blob], nomeArquivo, { type: 'video/mp4' });
-
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({
-          files: [file],
-          title: 'Gravação Teleprompter'
-        });
-        return;
-      } catch (err) {
-        console.log("Menu de compartilhamento fechado.");
-      }
-    }
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = nomeArquivo;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }, []);
-
   // Gravação
   useEffect(() => {
     const activeStream = recordStream || stream;
@@ -118,8 +92,6 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
       }
 
       chunksRef.current = [];
-      setVideoBlob(null);
-      setVideoUrl(null);
 
       let options: MediaRecorderOptions = {
         audioBitsPerSecond: 128000,
@@ -143,16 +115,11 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
 
         recorder.onstop = () => {
           const blob = new Blob(chunksRef.current, { type: 'video/mp4' });
-
           if (blob.size > 1000) {
             const url = URL.createObjectURL(blob);
-            setVideoBlob(blob);
-            setVideoUrl(url);
-            onFinished();
-            autoSalvar(blob, url);
+            onFinishedVideo(blob, url);
           } else {
-            alert("Gravação muito curta. Grave por pelo menos 3 segundos.");
-            onFinished();
+            alert("A gravação foi muito curta. Grave por mais de 3 segundos.");
           }
         };
 
@@ -169,14 +136,14 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
       }
       mediaRecorderRef.current = null;
     }
-  }, [status, recordStream, stream, onFinished, autoSalvar]);
+  }, [status, recordStream, stream, onFinishedVideo]);
 
   return (
     <div className="relative w-full h-full bg-slate-950 flex items-center justify-center overflow-hidden">
       {error ? (
         <div className="text-center p-6 bg-slate-900 border border-slate-800 rounded-2xl max-w-xs m-4 z-30">
           <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-3" />
-          <h3 className="text-base font-bold text-white mb-2">Permissão Necessária</h3>
+          <h3 className="text-base font-bold text-white mb-2">Permissão da Câmera</h3>
           <p className="text-slate-300 text-xs mb-4">{error}</p>
           <button 
             onClick={startCamera}
@@ -194,54 +161,6 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
           webkit-playsinline="true"
           className={`w-full h-full object-cover ${config.mirror ? 'scale-x-[-1]' : ''}`}
         />
-      )}
-
-      {/* JANELA DE SALVAMENTO EM TELA INTEIRA (Fica por cima de TUDO, sem nada tapando os botões) */}
-      {videoUrl && (
-        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/95 backdrop-blur-lg p-4">
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-sm w-full flex flex-col items-center shadow-2xl">
-            
-            <div className="flex items-center gap-2 mb-2 text-green-400">
-              <CheckCircle2 className="w-6 h-6" />
-              <h2 className="text-base font-bold text-white">Vídeo Gravado!</h2>
-            </div>
-
-            <p className="text-xs text-slate-400 mb-4 text-center">
-              Assista abaixo antes de enviar para as redes:
-            </p>
-
-            {/* PLAYER DE VÍDEO */}
-            <div className="w-full aspect-[9/12] max-h-64 bg-black rounded-2xl overflow-hidden border border-slate-800 mb-5 shadow-inner">
-              <video 
-                src={videoUrl} 
-                controls 
-                autoPlay 
-                playsInline 
-                className="w-full h-full object-contain"
-              />
-            </div>
-
-            {/* BOTÕES GRANDES E LIMPOS */}
-            <div className="w-full space-y-3">
-              <button 
-                onClick={() => videoBlob && autoSalvar(videoBlob, videoUrl)}
-                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-bold py-3.5 px-4 rounded-2xl text-sm shadow-lg shadow-blue-900/40 transition-all"
-              >
-                <Share2 className="w-5 h-5" />
-                Salvar na Galeria
-              </button>
-
-              <button 
-                onClick={() => setVideoUrl(null)}
-                className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 font-semibold py-3 px-4 rounded-2xl text-xs transition-all"
-              >
-                <RotateCcw className="w-4 h-4" />
-                Gravar Outro Vídeo
-              </button>
-            </div>
-
-          </div>
-        </div>
       )}
     </div>
   );
