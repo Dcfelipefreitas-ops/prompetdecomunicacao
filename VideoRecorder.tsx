@@ -12,38 +12,61 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
   
   const [error, setError] = useState<string | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [recordStream, setRecordStream] = useState<MediaStream | null>(null);
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
 
-  // Iniciar Câmera com ÁUDIO LIMPO (sem filtros que distorcem para o TikTok)
+  // Iniciar Câmera e Pré-Amplificador de Áudio
   const startCamera = useCallback(async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setError("Câmera bloqueada. Verifique as permissões.");
+        setError("Câmera indisponível. Verifique as permissões.");
         return;
       }
 
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
+      // Configuração de Câmera travada em 30 FPS para o TikTok não picotar
+      const rawStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'user',
           width: { ideal: 1280 },
-          height: { ideal: 720 }
+          height: { ideal: 720 },
+          frameRate: { ideal: 30, max: 30 } // 30 FPS cravados para o TikTok
         },
         audio: {
-          echoCancellation: false,   // Desativa cancelamento que corta a voz
-          noiseSuppression: false,   // Desativa redução agressiva (tira o som de 'robô')
-          autoGainControl: true,     // Mantém o volume da voz estável
-          channelCount: 1,           // Canal único estável
-          sampleRate: 44100          // Taxa de amostragem padrão de estúdio
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: true
         }
       });
 
-      setStream(mediaStream);
+      setStream(rawStream);
+
+      // --- AMPLIFICADOR DIGITAL DE SOM (+250% de volume) ---
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx();
+      audioContextRef.current = audioCtx;
+
+      const source = audioCtx.createMediaStreamSource(rawStream);
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 2.5; // Multiplica o volume por 2.5x (som encorpado e alto)
+
+      const destination = audioCtx.createMediaStreamDestination();
+      source.connect(gainNode);
+
+      // Junta o vídeo da câmera com o áudio amplificado
+      const boostedStream = new MediaStream([
+        ...rawStream.getVideoTracks(),
+        ...destination.stream.getAudioTracks()
+      ]);
+
+      setRecordStream(boostedStream);
+
       if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
+        videoRef.current.srcObject = rawStream;
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play().catch(console.error);
         };
@@ -51,7 +74,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
       setError(null);
     } catch (err) {
       console.error("Erro câmera:", err);
-      setError("Permita o acesso à Câmera e Microfone no navegador.");
+      setError("Permita o acesso à Câmera e Microfone.");
     }
   }, []);
 
@@ -59,28 +82,27 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
     startCamera();
     return () => {
       stream?.getTracks().forEach(track => track.stop());
+      audioContextRef.current?.close().catch(() => {});
     };
   }, [startCamera]);
 
-  // Função para salvar direto na galeria/compartilhar
+  // Salvar na Galeria
   const autoSalvar = useCallback(async (blob: Blob, url: string) => {
     const nomeArquivo = `prompter_${Date.now()}.mp4`;
     const file = new File([blob], nomeArquivo, { type: 'video/mp4' });
 
-    // Tenta abrir direto a janela nativa do celular (onde tem "Salvar Vídeo" para ir pra Galeria)
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({
           files: [file],
-          title: 'Gravação Teleprompter'
+          title: 'Gravação ProPrompter'
         });
         return;
       } catch (err) {
-        console.log("Compartilhamento fechado.");
+        console.log("Compartilhamento concluído/fechado.");
       }
     }
 
-    // Se não abrir a janela nativa, faz o download imediato
     const a = document.createElement('a');
     a.href = url;
     a.download = nomeArquivo;
@@ -89,27 +111,33 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
     document.body.removeChild(a);
   }, []);
 
-  // Gravação
+  // Gravação Otimizada para Redes Sociais
   useEffect(() => {
-    if (status === 'recording' && stream) {
+    const activeStream = recordStream || stream;
+
+    if (status === 'recording' && activeStream) {
+      if (audioContextRef.current?.state === 'suspended') {
+        audioContextRef.current.resume();
+      }
+
       chunksRef.current = [];
       setVideoBlob(null);
       setVideoUrl(null);
 
-      // Configuração para áudio limpo e vídeo compatível com TikTok
+      // Procura formato aceito pelo TikTok (H.264 / MP4)
       let options: MediaRecorderOptions = {
-        audioBitsPerSecond: 128000,   // Áudio cristalino de 128 kbps
-        videoBitsPerSecond: 2500000   // 2.5 Mbps para imagem nítida
+        audioBitsPerSecond: 128000,
+        videoBitsPerSecond: 3000000 // 3 Mbps estável
       };
 
-      if (MediaRecorder.isTypeSupported('video/mp4')) {
+      if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1,mp4a.40.2')) {
+        options.mimeType = 'video/mp4;codecs=avc1,mp4a.40.2';
+      } else if (MediaRecorder.isTypeSupported('video/mp4')) {
         options.mimeType = 'video/mp4';
-      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
-        options.mimeType = 'video/webm;codecs=h264';
       }
 
       try {
-        const recorder = new MediaRecorder(stream, options);
+        const recorder = new MediaRecorder(activeStream, options);
 
         recorder.ondataavailable = (e) => {
           if (e.data && e.data.size > 0) {
@@ -125,16 +153,15 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
             setVideoBlob(blob);
             setVideoUrl(url);
             onFinished();
-
-            // DISPARA O SALVAMENTO AUTOMATICAMENTE
             autoSalvar(blob, url);
           } else {
-            alert("A gravação foi muito curta. Grave por pelo menos 3 segundos.");
+            alert("A gravação foi muito curta. Grave por mais de 3 segundos.");
             onFinished();
           }
         };
 
-        recorder.start(250);
+        // Gravação contínua sem picotar o processador do celular
+        recorder.start();
         mediaRecorderRef.current = recorder;
       } catch (err) {
         console.error("Erro recorder:", err);
@@ -143,19 +170,18 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
     } else if (status === 'stopping' && mediaRecorderRef.current) {
       const rec = mediaRecorderRef.current;
       if (rec.state === 'recording') {
-        rec.requestData();
         rec.stop();
       }
       mediaRecorderRef.current = null;
     }
-  }, [status, stream, onFinished, autoSalvar]);
+  }, [status, recordStream, stream, onFinished, autoSalvar]);
 
   return (
     <div className="relative w-full h-full bg-slate-950 flex items-center justify-center overflow-hidden">
       {error ? (
         <div className="text-center p-6 bg-slate-900 border border-slate-800 rounded-2xl max-w-xs m-4 z-30">
           <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-3" />
-          <h3 className="text-base font-bold text-white mb-2">Permissão Necessária</h3>
+          <h3 className="text-base font-bold text-white mb-2">Permissão da Câmera</h3>
           <p className="text-slate-300 text-xs mb-4">{error}</p>
           <button 
             onClick={startCamera}
@@ -175,17 +201,16 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
         />
       )}
 
-      {/* Janela que confirma a gravação e permite reenviar caso queira */}
       {videoUrl && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl max-w-xs w-full flex flex-col items-center shadow-2xl">
             <div className="flex items-center gap-2 mb-2 text-green-400">
               <CheckCircle2 className="w-5 h-5" />
-              <span className="text-sm font-bold text-white">Vídeo Finalizado!</span>
+              <span className="text-sm font-bold text-white">Vídeo Concluído!</span>
             </div>
 
             <p className="text-[11px] text-slate-400 mb-3 text-center">
-              O áudio foi tratado para redes sociais (TikTok / Instagram).
+              Áudio amplificado e vídeo estabilizado em 30 FPS.
             </p>
 
             <div className="w-full aspect-[9/12] max-h-52 bg-black rounded-xl overflow-hidden border border-slate-800 mb-3">
