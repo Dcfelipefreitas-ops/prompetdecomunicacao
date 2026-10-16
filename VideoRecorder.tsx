@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { RecordingStatus, PrompterConfig } from './types';
-import { AlertCircle, Download, CheckCircle2, Share2 } from 'lucide-react';
+import { AlertCircle, Download, CheckCircle2, Share2, Play, RotateCcw } from 'lucide-react';
 
 interface VideoRecorderProps {
   status: RecordingStatus;
@@ -11,35 +11,37 @@ interface VideoRecorderProps {
 const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinished }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]); // Evita que o vídeo fique vazio
+  const chunksRef = useRef<Blob[]>([]);
+  
   const [error, setError] = useState<string | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [mimeTypeUsado, setMimeTypeUsado] = useState<string>('video/mp4');
+  const [fileSizeText, setFileSizeText] = useState<string>('');
 
-  // Descobre o formato correto do celular (MP4 para iPhone/Android)
-  const getSupportedMimeType = (): string => {
-    const tipos = [
-      'video/mp4;codecs=avc1,mp4a.40.2',
-      'video/mp4',
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm',
+  // 1. Detectar o melhor formato (priorizando MP4 para a Galeria aceitar)
+  const getBestMimeType = (): { mimeType: string; extension: string } => {
+    const types = [
+      { mimeType: 'video/mp4;codecs=avc1,mp4a.40.2', extension: 'mp4' },
+      { mimeType: 'video/mp4', extension: 'mp4' },
+      { mimeType: 'video/webm;codecs=h264', extension: 'mp4' }, // H264 empacotado
+      { mimeType: 'video/webm;codecs=vp8,opus', extension: 'webm' },
+      { mimeType: 'video/webm', extension: 'webm' }
     ];
-    for (const tipo of tipos) {
-      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(tipo)) {
-        return tipo;
+
+    for (const t of types) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t.mimeType)) {
+        return t;
       }
     }
-    return '';
+    return { mimeType: '', extension: 'mp4' };
   };
 
-  // Iniciar Câmera
+  // 2. Iniciar Câmera
   const startCamera = useCallback(async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setError("Câmera indisponível. Verifique as permissões do navegador.");
+        setError("Câmera bloqueada. Verifique as permissões do seu navegador.");
         return;
       }
 
@@ -49,7 +51,10 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
           width: { ideal: 1280 },
           height: { ideal: 720 }
         },
-        audio: true
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true
+        }
       });
 
       setStream(mediaStream);
@@ -62,7 +67,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
       setError(null);
     } catch (err) {
       console.error("Erro câmera:", err);
-      setError("Permissão da câmera negada. Permita o acesso nas configurações do celular.");
+      setError("Permissão negada. Toque no cadeado ao lado do link e permita a Câmera e Microfone.");
     }
   }, []);
 
@@ -73,81 +78,90 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
     };
   }, [startCamera]);
 
-  // Gravação Robusta (espera todos os dados serem processados)
+  // 3. Controle de Gravação sem perda de dados
   useEffect(() => {
     if (status === 'recording' && stream) {
       chunksRef.current = [];
       setVideoBlob(null);
       setVideoUrl(null);
 
-      const mimeType = getSupportedMimeType();
-      setMimeTypeUsado(mimeType);
-
+      const { mimeType } = getBestMimeType();
       const options = mimeType ? { mimeType } : undefined;
-      const recorder = new MediaRecorder(stream, options);
+      
+      try {
+        const recorder = new MediaRecorder(stream, options);
 
-      // Guarda os pedaços de vídeo continuamente
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          chunksRef.current.push(e.data);
-        }
-      };
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            chunksRef.current.push(e.data);
+          }
+        };
 
-      // Só cria o arquivo final quando o gravador parar TOTALMENTE
-      recorder.onstop = () => {
-        const finalType = mimeType.includes('mp4') ? 'video/mp4' : 'video/webm';
-        const blob = new Blob(chunksRef.current, { type: finalType });
-        
-        if (blob.size > 0) {
-          setVideoBlob(blob);
-          setVideoUrl(URL.createObjectURL(blob));
-          onFinished();
-        } else {
-          alert("Ocorreu um erro: o vídeo gravado estava sem dados. Tente novamente.");
-        }
-      };
+        recorder.onstop = () => {
+          const { extension } = getBestMimeType();
+          const finalMime = extension === 'mp4' ? 'video/mp4' : 'video/webm';
+          
+          // Junta todos os pedaços num arquivo único
+          const blob = new Blob(chunksRef.current, { type: finalMime });
+          
+          if (blob.size > 1000) { // Se tiver mais de 1KB de dados
+            const sizeInMB = (blob.size / (1024 * 1024)).toFixed(2);
+            setFileSizeText(`${sizeInMB} MB`);
+            setVideoBlob(blob);
+            setVideoUrl(URL.createObjectURL(blob));
+            onFinished();
+          } else {
+            alert("A gravação foi muito curta ou vazia. Tente gravar por pelo menos 3 segundos.");
+            onFinished();
+          }
+        };
 
-      recorder.start(500); // Coleta dados a cada meio segundo
-      mediaRecorderRef.current = recorder;
+        // Salva dados a cada 200ms para NUNCA perder o final do vídeo
+        recorder.start(200);
+        mediaRecorderRef.current = recorder;
+      } catch (err) {
+        console.error("Erro ao criar MediaRecorder:", err);
+      }
 
     } else if (status === 'stopping' && mediaRecorderRef.current) {
-      if (mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
+      const rec = mediaRecorderRef.current;
+      if (rec.state === 'recording') {
+        rec.requestData(); // FORÇA salvar todos os bytes que faltam
+        rec.stop();
       }
+      mediaRecorderRef.current = null;
     }
   }, [status, stream, onFinished]);
 
-  // Função para Salvar Direto na Galeria / Fotos
+  // 4. Salvar na Galeria
   const handleSaveToGallery = async () => {
-    if (!videoBlob) return;
+    if (!videoBlob || !videoUrl) return;
 
-    const extensao = mimeTypeUsado.includes('mp4') ? 'mp4' : 'webm';
-    const nomeArquivo = `${config.fileName || 'meu_video'}_${Date.now()}.${extensao}`;
-    const file = new File([videoBlob], nomeArquivo, { type: videoBlob.type });
+    const { extension } = getBestMimeType();
+    const fileName = `video_${Date.now()}.${extension}`;
+    const file = new File([videoBlob], fileName, { type: videoBlob.type });
 
-    // Se o celular suportar compartilhamento nativo (iPhone e Android modernos)
+    // Tenta abrir o menu nativo do celular (onde tem "Salvar Vídeo" / "Google Fotos")
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({
           files: [file],
-          title: 'Meu Vídeo Gravado',
-          text: 'Vídeo gravado pelo Teleprompter'
+          title: 'Gravação Teleprompter',
+          text: 'Meu vídeo gravado com o Teleprompter'
         });
-        return; // No iPhone, o usuário clica em "Salvar Vídeo" e vai direto pra Galeria!
-      } catch (err) {
-        console.log("Compartilhamento cancelado:", err);
+        return;
+      } catch (e) {
+        console.log("Compartilhamento manual.");
       }
     }
 
-    // Caso o navegador não tenha o botão nativo, faz o download padrão
-    if (videoUrl) {
-      const a = document.createElement('a');
-      a.href = videoUrl;
-      a.download = nomeArquivo;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
+    // Se o celular não abrir o menu de fotos, baixa diretamente
+    const a = document.createElement('a');
+    a.href = videoUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   return (
@@ -156,7 +170,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
         <div className="text-center p-6 bg-slate-900 border border-slate-800 rounded-2xl max-w-xs m-4 z-30 shadow-xl">
           <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-3" />
           <h3 className="text-base font-bold text-white mb-2">Acesso à Câmera</h3>
-          <p className="text-slate-300 text-xs mb-4 leading-relaxed">{error}</p>
+          <p className="text-slate-300 text-xs mb-4">{error}</p>
           <button 
             onClick={startCamera}
             className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold"
@@ -175,33 +189,49 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
         />
       )}
 
-      {/* Janela de Conclusão com opção de salvar na Galeria */}
+      {/* JANELA DE PRÉVIA (Mostra o vídeo gravado pronto tocando na tela!) */}
       {videoUrl && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-xs w-full text-center shadow-2xl animate-in zoom-in-95">
-            <div className="w-14 h-14 bg-green-500/20 text-green-400 rounded-full flex items-center justify-center mx-auto mb-3">
-              <CheckCircle2 className="w-8 h-8" />
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
+          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl max-w-xs w-full flex flex-col items-center shadow-2xl">
+            
+            <div className="flex items-center gap-2 mb-2 text-green-400">
+              <CheckCircle2 className="w-5 h-5" />
+              <span className="text-sm font-bold text-white">Vídeo Gravado com Sucesso!</span>
             </div>
 
-            <h2 className="text-lg font-bold text-white mb-1">Gravação Pronta!</h2>
-            <p className="text-slate-400 text-xs mb-5">Salve o vídeo diretamente na galeria do seu celular.</p>
+            <p className="text-[11px] text-slate-400 mb-3">
+              Tamanho do arquivo: <span className="text-blue-400 font-bold">{fileSizeText}</span>
+            </p>
 
-            <div className="space-y-2.5">
+            {/* PLAYER DE VÍDEO PARA VOCÊ ASSISTIR ANTES DE SALVAR */}
+            <div className="w-full aspect-[9/12] max-h-56 bg-black rounded-xl overflow-hidden border border-slate-800 mb-4">
+              <video 
+                src={videoUrl} 
+                controls 
+                autoPlay 
+                playsInline 
+                className="w-full h-full object-contain"
+              />
+            </div>
+
+            <div className="w-full space-y-2">
               <button 
                 onClick={handleSaveToGallery}
-                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-bold py-3 px-4 rounded-xl text-sm shadow-lg shadow-blue-900/30 transition-all"
+                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-bold py-3 px-4 rounded-xl text-xs shadow-lg shadow-blue-900/40 transition-all"
               >
                 <Share2 className="w-4 h-4" />
-                Salvar na Galeria
+                Salvar na Galeria / Compartilhar
               </button>
 
               <button 
                 onClick={() => setVideoUrl(null)}
-                className="w-full py-2.5 text-slate-400 hover:text-white text-xs font-medium"
+                className="w-full flex items-center justify-center gap-1 py-2 text-slate-400 hover:text-white text-xs"
               >
-                Gravar Outro Vídeo
+                <RotateCcw className="w-3.5 h-3.5" />
+                Gravar Novamente
               </button>
             </div>
+
           </div>
         </div>
       )}
