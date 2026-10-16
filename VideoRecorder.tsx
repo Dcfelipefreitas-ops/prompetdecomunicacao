@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { RecordingStatus, PrompterConfig } from './types';
-import { AlertCircle, Download, CheckCircle2, Share2, Play, RotateCcw } from 'lucide-react';
+import { AlertCircle, CheckCircle2, RotateCcw, Share2 } from 'lucide-react';
 
 interface VideoRecorderProps {
   status: RecordingStatus;
@@ -17,31 +17,12 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [fileSizeText, setFileSizeText] = useState<string>('');
 
-  // 1. Detectar o melhor formato (priorizando MP4 para a Galeria aceitar)
-  const getBestMimeType = (): { mimeType: string; extension: string } => {
-    const types = [
-      { mimeType: 'video/mp4;codecs=avc1,mp4a.40.2', extension: 'mp4' },
-      { mimeType: 'video/mp4', extension: 'mp4' },
-      { mimeType: 'video/webm;codecs=h264', extension: 'mp4' }, // H264 empacotado
-      { mimeType: 'video/webm;codecs=vp8,opus', extension: 'webm' },
-      { mimeType: 'video/webm', extension: 'webm' }
-    ];
-
-    for (const t of types) {
-      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t.mimeType)) {
-        return t;
-      }
-    }
-    return { mimeType: '', extension: 'mp4' };
-  };
-
-  // 2. Iniciar Câmera
+  // Iniciar Câmera com ÁUDIO LIMPO (sem filtros que distorcem para o TikTok)
   const startCamera = useCallback(async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setError("Câmera bloqueada. Verifique as permissões do seu navegador.");
+        setError("Câmera bloqueada. Verifique as permissões.");
         return;
       }
 
@@ -52,8 +33,11 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
           height: { ideal: 720 }
         },
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true
+          echoCancellation: false,   // Desativa cancelamento que corta a voz
+          noiseSuppression: false,   // Desativa redução agressiva (tira o som de 'robô')
+          autoGainControl: true,     // Mantém o volume da voz estável
+          channelCount: 1,           // Canal único estável
+          sampleRate: 44100          // Taxa de amostragem padrão de estúdio
         }
       });
 
@@ -67,7 +51,7 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
       setError(null);
     } catch (err) {
       console.error("Erro câmera:", err);
-      setError("Permissão negada. Toque no cadeado ao lado do link e permita a Câmera e Microfone.");
+      setError("Permita o acesso à Câmera e Microfone no navegador.");
     }
   }, []);
 
@@ -78,16 +62,52 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
     };
   }, [startCamera]);
 
-  // 3. Controle de Gravação sem perda de dados
+  // Função para salvar direto na galeria/compartilhar
+  const autoSalvar = useCallback(async (blob: Blob, url: string) => {
+    const nomeArquivo = `prompter_${Date.now()}.mp4`;
+    const file = new File([blob], nomeArquivo, { type: 'video/mp4' });
+
+    // Tenta abrir direto a janela nativa do celular (onde tem "Salvar Vídeo" para ir pra Galeria)
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: 'Gravação Teleprompter'
+        });
+        return;
+      } catch (err) {
+        console.log("Compartilhamento fechado.");
+      }
+    }
+
+    // Se não abrir a janela nativa, faz o download imediato
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nomeArquivo;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, []);
+
+  // Gravação
   useEffect(() => {
     if (status === 'recording' && stream) {
       chunksRef.current = [];
       setVideoBlob(null);
       setVideoUrl(null);
 
-      const { mimeType } = getBestMimeType();
-      const options = mimeType ? { mimeType } : undefined;
-      
+      // Configuração para áudio limpo e vídeo compatível com TikTok
+      let options: MediaRecorderOptions = {
+        audioBitsPerSecond: 128000,   // Áudio cristalino de 128 kbps
+        videoBitsPerSecond: 2500000   // 2.5 Mbps para imagem nítida
+      };
+
+      if (MediaRecorder.isTypeSupported('video/mp4')) {
+        options.mimeType = 'video/mp4';
+      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
+        options.mimeType = 'video/webm;codecs=h264';
+      }
+
       try {
         const recorder = new MediaRecorder(stream, options);
 
@@ -98,84 +118,50 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
         };
 
         recorder.onstop = () => {
-          const { extension } = getBestMimeType();
-          const finalMime = extension === 'mp4' ? 'video/mp4' : 'video/webm';
-          
-          // Junta todos os pedaços num arquivo único
-          const blob = new Blob(chunksRef.current, { type: finalMime });
-          
-          if (blob.size > 1000) { // Se tiver mais de 1KB de dados
-            const sizeInMB = (blob.size / (1024 * 1024)).toFixed(2);
-            setFileSizeText(`${sizeInMB} MB`);
+          const blob = new Blob(chunksRef.current, { type: 'video/mp4' });
+
+          if (blob.size > 1000) {
+            const url = URL.createObjectURL(blob);
             setVideoBlob(blob);
-            setVideoUrl(URL.createObjectURL(blob));
+            setVideoUrl(url);
             onFinished();
+
+            // DISPARA O SALVAMENTO AUTOMATICAMENTE
+            autoSalvar(blob, url);
           } else {
-            alert("A gravação foi muito curta ou vazia. Tente gravar por pelo menos 3 segundos.");
+            alert("A gravação foi muito curta. Grave por pelo menos 3 segundos.");
             onFinished();
           }
         };
 
-        // Salva dados a cada 200ms para NUNCA perder o final do vídeo
-        recorder.start(200);
+        recorder.start(250);
         mediaRecorderRef.current = recorder;
       } catch (err) {
-        console.error("Erro ao criar MediaRecorder:", err);
+        console.error("Erro recorder:", err);
       }
 
     } else if (status === 'stopping' && mediaRecorderRef.current) {
       const rec = mediaRecorderRef.current;
       if (rec.state === 'recording') {
-        rec.requestData(); // FORÇA salvar todos os bytes que faltam
+        rec.requestData();
         rec.stop();
       }
       mediaRecorderRef.current = null;
     }
-  }, [status, stream, onFinished]);
-
-  // 4. Salvar na Galeria
-  const handleSaveToGallery = async () => {
-    if (!videoBlob || !videoUrl) return;
-
-    const { extension } = getBestMimeType();
-    const fileName = `video_${Date.now()}.${extension}`;
-    const file = new File([videoBlob], fileName, { type: videoBlob.type });
-
-    // Tenta abrir o menu nativo do celular (onde tem "Salvar Vídeo" / "Google Fotos")
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({
-          files: [file],
-          title: 'Gravação Teleprompter',
-          text: 'Meu vídeo gravado com o Teleprompter'
-        });
-        return;
-      } catch (e) {
-        console.log("Compartilhamento manual.");
-      }
-    }
-
-    // Se o celular não abrir o menu de fotos, baixa diretamente
-    const a = document.createElement('a');
-    a.href = videoUrl;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
+  }, [status, stream, onFinished, autoSalvar]);
 
   return (
     <div className="relative w-full h-full bg-slate-950 flex items-center justify-center overflow-hidden">
       {error ? (
-        <div className="text-center p-6 bg-slate-900 border border-slate-800 rounded-2xl max-w-xs m-4 z-30 shadow-xl">
+        <div className="text-center p-6 bg-slate-900 border border-slate-800 rounded-2xl max-w-xs m-4 z-30">
           <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-3" />
-          <h3 className="text-base font-bold text-white mb-2">Acesso à Câmera</h3>
+          <h3 className="text-base font-bold text-white mb-2">Permissão Necessária</h3>
           <p className="text-slate-300 text-xs mb-4">{error}</p>
           <button 
             onClick={startCamera}
             className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold"
           >
-            Tentar Conectar
+            Tentar Novamente
           </button>
         </div>
       ) : (
@@ -189,22 +175,20 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
         />
       )}
 
-      {/* JANELA DE PRÉVIA (Mostra o vídeo gravado pronto tocando na tela!) */}
+      {/* Janela que confirma a gravação e permite reenviar caso queira */}
       {videoUrl && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl max-w-xs w-full flex flex-col items-center shadow-2xl">
-            
             <div className="flex items-center gap-2 mb-2 text-green-400">
               <CheckCircle2 className="w-5 h-5" />
-              <span className="text-sm font-bold text-white">Vídeo Gravado com Sucesso!</span>
+              <span className="text-sm font-bold text-white">Vídeo Finalizado!</span>
             </div>
 
-            <p className="text-[11px] text-slate-400 mb-3">
-              Tamanho do arquivo: <span className="text-blue-400 font-bold">{fileSizeText}</span>
+            <p className="text-[11px] text-slate-400 mb-3 text-center">
+              O áudio foi tratado para redes sociais (TikTok / Instagram).
             </p>
 
-            {/* PLAYER DE VÍDEO PARA VOCÊ ASSISTIR ANTES DE SALVAR */}
-            <div className="w-full aspect-[9/12] max-h-56 bg-black rounded-xl overflow-hidden border border-slate-800 mb-4">
+            <div className="w-full aspect-[9/12] max-h-52 bg-black rounded-xl overflow-hidden border border-slate-800 mb-3">
               <video 
                 src={videoUrl} 
                 controls 
@@ -216,11 +200,11 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
 
             <div className="w-full space-y-2">
               <button 
-                onClick={handleSaveToGallery}
-                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-bold py-3 px-4 rounded-xl text-xs shadow-lg shadow-blue-900/40 transition-all"
+                onClick={() => videoBlob && autoSalvar(videoBlob, videoUrl)}
+                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 px-4 rounded-xl text-xs"
               >
                 <Share2 className="w-4 h-4" />
-                Salvar na Galeria / Compartilhar
+                Salvar na Galeria Novamente
               </button>
 
               <button 
@@ -228,10 +212,9 @@ const VideoRecorder: React.FC<VideoRecorderProps> = ({ status, config, onFinishe
                 className="w-full flex items-center justify-center gap-1 py-2 text-slate-400 hover:text-white text-xs"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Gravar Novamente
+                Gravar Outro Vídeo
               </button>
             </div>
-
           </div>
         </div>
       )}
